@@ -7,13 +7,21 @@ import (
 	"cgt.name/pkg/go-mwclient"
 )
 
-func GetLinks(w *mwclient.Client, page string) {
-	var links []string
+func GetLinks(w *mwclient.Client, pages []string) {
+	ret := make(map[string][]string)
+	titles := ""
+	for i := range pages {
+		if titles == "" {
+			titles = pages[i]
+			continue
+		}
+		titles = titles + "|" + pages[i]
+	}
 	//Initial get
 	parameters := map[string]string{
 		"action":  "query",
 		"prop":    "links",
-		"titles":  page,
+		"titles":  titles,
 		"pllimit": "max",
 	}
 
@@ -30,20 +38,30 @@ func GetLinks(w *mwclient.Client, page string) {
 	if err != nil {
 		panic(err)
 	}
-	//Add links
-	for i := range test.Query.Pages[0].Links {
-		links = append(links, test.Query.Pages[0].Links[i].Title)
-	}
-	//Finding all the links on the page
-	for !test.Complite {
-		parameters := map[string]string{
-			"action":     "query",
-			"prop":       "links",
-			"titles":     page,
-			"pllimit":    "max",
-			"plcontinue": test.Continue.Plcontinue,
+	//Add links initial request links
+	for i := range test.Query.Pages {
+		links := ret[test.Query.Pages[i].Title]
+		for j := range test.Query.Pages[i].Links {
+			links = append(links, test.Query.Pages[i].Links[j].Title)
 		}
-		resp, err := w.Get(parameters)
+		ret[test.Query.Pages[i].Title] = links
+	}
+	done := true
+	if !test.Complite {
+		done = false
+	}
+	newparameters := map[string]string{
+		"action":     "query",
+		"prop":       "links",
+		"titles":     titles,
+		"pllimit":    "max",
+		"plcontinue": test.Continue.Plcontinue,
+	}
+
+	//Finding all the links on the page
+	for !done {
+
+		resp, err := w.Get(newparameters)
 		if err != nil {
 			panic(err)
 		}
@@ -51,22 +69,35 @@ func GetLinks(w *mwclient.Client, page string) {
 		if err != nil {
 			panic(err)
 		}
+		var test FullResponce
 		err = json.Unmarshal(data, &test)
 		if err != nil {
 			panic(err)
 		}
 		//Add links
-		for i := range test.Query.Pages[0].Links {
-			links = append(links, test.Query.Pages[0].Links[i].Title)
+		for i := range test.Query.Pages {
+			links := ret[test.Query.Pages[i].Title]
+			for j := range test.Query.Pages[i].Links {
+				links = append(links, test.Query.Pages[i].Links[j].Title)
+			}
+			ret[test.Query.Pages[i].Title] = links
 		}
+		if !test.Complite {
+			done = false
+			newparameters["plcontinue"] = test.Continue.Plcontinue
+		} else {
+			done = true
+		}
+	}
 
+	for key, value := range ret {
+		fmt.Printf("Calculating links for %s page\n", key)
+		x := 0
+		for range value {
+			x++
+		}
+		fmt.Printf("There are %d links on %s page\n", x, key)
 	}
-	//Count links
-	x := 0
-	for range links {
-		x++
-	}
-	fmt.Printf("There are %d, links on page %s\n", x, page)
 }
 
 func StartClient() *mwclient.Client {
