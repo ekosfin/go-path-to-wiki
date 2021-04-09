@@ -1,5 +1,7 @@
 package main
 
+import "fmt"
+
 /*
 //Create a bot linked to your account at: https://www.mediawiki.org/wiki/Special:BotPasswords
 const (
@@ -8,11 +10,26 @@ const (
 )
 */
 
+type LinkMessage struct {
+	ret map[string][]string
+}
+
 func main() {
 	w := StartClient()
 	var pages []string
-	pages = append(pages, "Finland")
+	linkChan := make(chan LinkMessage)
+
 	pages = append(pages, "Finnkino")
 	pages = append(pages, "COVID-19")
-	GetLinks(w, pages)
+	go GetLinks(w, pages, linkChan)
+
+	links := <-linkChan
+	for key, value := range links.ret {
+		fmt.Printf("Calculating links for %s page\n", key)
+		x := 0
+		for range value {
+			x++
+		}
+		fmt.Printf("There are %d links on %s page\n", x, key)
+	}
 }

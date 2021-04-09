@@ -2,12 +2,11 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 
 	"cgt.name/pkg/go-mwclient"
 )
 
-func GetLinks(w *mwclient.Client, pages []string) {
+func GetLinks(w *mwclient.Client, pages []string, linkChan chan LinkMessage) {
 	ret := make(map[string][]string)
 	titles := ""
 	for i := range pages {
@@ -89,15 +88,7 @@ func GetLinks(w *mwclient.Client, pages []string) {
 			done = true
 		}
 	}
-
-	for key, value := range ret {
-		fmt.Printf("Calculating links for %s page\n", key)
-		x := 0
-		for range value {
-			x++
-		}
-		fmt.Printf("There are %d links on %s page\n", x, key)
-	}
+	linkChan <- LinkMessage{ret: ret}
 }
 
 func StartClient() *mwclient.Client {
