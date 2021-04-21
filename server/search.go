@@ -2,12 +2,42 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"cgt.name/pkg/go-mwclient"
 )
 
-func GetLinks(w *mwclient.Client, pages []string, linkChan chan LinkMessage) {
-	ret := make(map[string][]string)
+type search struct {
+	client         *mwclient.Client
+	requestChannel chan QueryMessage
+	linkChannel    chan LinkMessage
+}
+
+func newSearch(reqChan chan QueryMessage, linkChan chan LinkMessage) *search {
+	c := StartClient()
+	return &search{
+		client:         c,
+		requestChannel: reqChan,
+		linkChannel:    linkChan,
+	}
+}
+
+func (search *search) run(initalPage string) {
+	var pages []string
+	pages = append(pages, initalPage)
+	//Finding the starting page links
+	search.GetLinks(pages, 0, initalPage)
+	//Then start listening for querychannel
+	for query := range search.requestChannel {
+		//Process query and then wait for the next one
+		search.GetLinks(query.pages, query.depth, query.origin)
+	}
+	fmt.Println("Shutting down search tread...")
+}
+
+func (search *search) GetLinks(pages []string, depth int, origin string) {
+
+	//Setting parameters for GET
 	titles := ""
 	for i := range pages {
 		if titles == "" {
@@ -16,7 +46,6 @@ func GetLinks(w *mwclient.Client, pages []string, linkChan chan LinkMessage) {
 		}
 		titles = titles + "|" + pages[i]
 	}
-	//Initial get
 	parameters := map[string]string{
 		"action":  "query",
 		"prop":    "links",
@@ -24,7 +53,8 @@ func GetLinks(w *mwclient.Client, pages []string, linkChan chan LinkMessage) {
 		"pllimit": "max",
 	}
 
-	resp, err := w.Get(parameters)
+	//Initial GET
+	resp, err := search.client.Get(parameters)
 	if err != nil {
 		panic(err)
 	}
@@ -37,6 +67,10 @@ func GetLinks(w *mwclient.Client, pages []string, linkChan chan LinkMessage) {
 	if err != nil {
 		panic(err)
 	}
+
+	//Creating return hashtable
+	ret := make(map[string][]string)
+
 	//Add links initial request links
 	for i := range test.Query.Pages {
 		links := ret[test.Query.Pages[i].Title]
@@ -46,6 +80,7 @@ func GetLinks(w *mwclient.Client, pages []string, linkChan chan LinkMessage) {
 		ret[test.Query.Pages[i].Title] = links
 	}
 	done := true
+	//Checking if there is more data to GET from the search
 	if !test.Complite {
 		done = false
 	}
@@ -60,7 +95,7 @@ func GetLinks(w *mwclient.Client, pages []string, linkChan chan LinkMessage) {
 	//Finding all the links on the page
 	for !done {
 
-		resp, err := w.Get(newparameters)
+		resp, err := search.client.Get(newparameters)
 		if err != nil {
 			panic(err)
 		}
@@ -88,7 +123,8 @@ func GetLinks(w *mwclient.Client, pages []string, linkChan chan LinkMessage) {
 			done = true
 		}
 	}
-	linkChan <- LinkMessage{ret: ret}
+	//Sending finds to linkChannel
+	search.linkChannel <- LinkMessage{ret: ret, origin: origin, depth: depth}
 }
 
 func StartClient() *mwclient.Client {
