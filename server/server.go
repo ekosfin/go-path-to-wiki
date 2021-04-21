@@ -11,16 +11,24 @@ type pageInfo struct {
 	origin string
 }
 
+type calls struct {
+	sent    int
+	recived int
+	canSend bool
+}
+
 type server struct {
-	scannedPages   map[string]*pageInfo
-	linkChannel    chan LinkMessage
-	requestChannel chan QueryMessage
-	matchChannel   chan MatchMessage
-	startingPage   string
-	endingPage     string
-	found          bool
-	foundPath      foundPath
-	waitGroup      *sync.WaitGroup
+	syncScannedPages *sync.Map
+	syncCalls        *sync.Map
+	linkChannel      chan LinkMessage
+	requestChannel   chan QueryMessage
+	matchChannel     chan MatchMessage
+	startingPage     string
+	endingPage       string
+	found            bool
+	foundPath        foundPath
+	waitGroup        *sync.WaitGroup
+	sendWaitGroup    *sync.WaitGroup
 }
 
 type foundPath struct {
@@ -34,43 +42,76 @@ func newServer(start string, end string) *server {
 		path:  "None",
 	}
 	var wg sync.WaitGroup
+	var swg sync.WaitGroup
+	var sM sync.Map
+	var cM sync.Map
 	return &server{
-		scannedPages:   make(map[string]*pageInfo),
-		linkChannel:    make(chan LinkMessage),
-		requestChannel: make(chan QueryMessage),
-		matchChannel:   make(chan MatchMessage),
-		startingPage:   start,
-		endingPage:     end,
-		found:          false,
-		foundPath:      fP,
-		waitGroup:      &wg,
+		syncScannedPages: &sM,
+		syncCalls:        &cM,
+		linkChannel:      make(chan LinkMessage, 50),
+		requestChannel:   make(chan QueryMessage),
+		matchChannel:     make(chan MatchMessage),
+		startingPage:     start,
+		endingPage:       end,
+		found:            false,
+		foundPath:        fP,
+		waitGroup:        &wg,
+		sendWaitGroup:    &swg,
 	}
 }
 
 func (s *server) run() {
 	for scan := range s.linkChannel {
-		pI := &pageInfo{
-			depth:  scan.depth,
-			origin: scan.origin,
-		}
-		scannedPages := s.duplicateMap()
-		for key, value := range scan.ret {
-			val, ok := s.scannedPages[key]
-			if !ok {
-				s.scannedPages[key] = pI
-				fmt.Printf("PAGE: %s added\n", key)
-			} else {
-				if val.depth > pI.depth {
-					s.scannedPages[key] = pI
-					fmt.Printf("PAGE: %s faster path found\n", key)
-				}
-			}
-			s.waitGroup.Add(1)
-			newDepth := scan.depth + 1
-			go s.handleLinks(value, newDepth, key, scannedPages)
-		}
+		s.handleScan(scan)
 	}
 	fmt.Println("Shutting down server tread...")
+}
+
+func (s *server) handleScan(scan LinkMessage) {
+	temp, ok := s.syncCalls.Load(scan.depth)
+	if ok {
+		val := temp.(calls)
+		val.recived = val.recived + 1
+		s.syncCalls.Store(scan.depth, val)
+		fmt.Printf("RECIVED: %d, DEPTH: %d\n", val.recived, scan.depth)
+		if val.sent == val.recived {
+			val := calls{
+				canSend: true,
+				sent:    0,
+				recived: 0,
+			}
+			newDepth := scan.depth + 1
+			s.syncCalls.Store(newDepth, val)
+			fmt.Printf("Depth %d allowed\n", newDepth)
+		}
+	} else {
+		val := calls{
+			canSend: true,
+			sent:    1,
+			recived: 1,
+		}
+		s.syncCalls.Store(scan.depth, val)
+	}
+
+	pI := pageInfo{
+		depth:  scan.depth,
+		origin: scan.origin,
+	}
+	for key, value := range scan.ret {
+		temp, sok := s.syncScannedPages.Load(key)
+		if !sok {
+			s.syncScannedPages.Store(key, pI)
+		} else {
+			sval := temp.(pageInfo)
+			if pageInfo(sval).depth > pI.depth {
+				s.syncScannedPages.Store(key, pI)
+			}
+		}
+		s.waitGroup.Add(1)
+		newDepth := scan.depth + 1
+		go s.handleLinks(value, newDepth, key)
+	}
+	scan.ret = nil
 }
 
 func (s *server) match() {
@@ -78,7 +119,11 @@ func (s *server) match() {
 		previusPage := scan.originPage
 		path := previusPage + " -> " + s.endingPage
 		for previusPage != s.startingPage {
-			previusPage = s.scannedPages[previusPage].origin
+			temp, ok := s.syncScannedPages.Load(previusPage)
+			if !ok {
+				panic("Cannot find value")
+			}
+			previusPage = temp.(pageInfo).origin
 			path = previusPage + " -> " + path
 		}
 		fmt.Printf("One path found at depth: %d path: %s\n", scan.depth, path)
@@ -90,14 +135,21 @@ func (s *server) match() {
 	fmt.Println("Shutting down server match tread...")
 }
 
-func (s *server) handleLinks(links []string, depth int, origin string, scannedPages map[string]*pageInfo) {
-	//Now one step deeper
-	depth += depth
+func (s *server) handleLinks(links []string, depth int, origin string) {
 	//Readying sending package
 	sending := 0
 	var pages []string
-	//Looping links
+	query := QueryMessage{
+		pages:  pages,
+		origin: origin,
+		depth:  depth,
+	}
+
+	//Check for match
 	for link := range links {
+		if s.foundPath.depth < depth {
+			break
+		}
 		if links[link] == s.endingPage {
 			//Match found sending message
 			mm := MatchMessage{
@@ -108,48 +160,48 @@ func (s *server) handleLinks(links []string, depth int, origin string, scannedPa
 			s.found = true
 			break
 		}
-		//Check if duplicate site
-		_, ok := scannedPages[links[link]]
+	}
+	//Wait for depth
+	canSend := false
+	for !canSend && !s.found {
+		temp, ok := s.syncCalls.Load(query.depth)
 		if ok {
-			//Page exists do not send request
-		} else {
-			//Add to sending
-			pages = append(pages, links[link])
-			sending += sending
-			//Due to wikipedia limitations max api request for pages is 50 this ensures that it is respected
-			if sending <= 49 {
-				query := QueryMessage{
-					pages:  pages,
-					origin: origin,
-					depth:  depth,
-				}
-				//Send request
-				if !s.found {
-					s.requestChannel <- query
-				}
-				sending = 0
-				pages = nil
-			}
+			val := temp.(calls)
+			canSend = val.canSend
 		}
+		time.Sleep(200)
+	}
+	//Send links
+	for link := range links {
+		//Check for duplicates
+		_, ok := s.syncScannedPages.Load(link)
+		if ok {
+			continue
+		}
+
+		//Add to sending
+		pages = append(pages, links[link])
+		sending = sending + 1
+		//Due to wikipedia limitations max api request for pages is 50 this ensures that it is respected
+		if sending <= 49 {
+			//Send request
+			if !s.found {
+				s.sendWaitGroup.Add(1)
+				query.pages = pages
+				s.sentLinks(query)
+			}
+			sending = 0
+			pages = nil
+		}
+
 	}
 	if !s.found {
 		//Send remaining pages
-		query := QueryMessage{
-			pages:  pages,
-			origin: origin,
-			depth:  depth,
-		}
-		s.requestChannel <- query
+		s.sendWaitGroup.Add(1)
+		query.pages = pages
+		s.sentLinks(query)
 	}
 	s.waitGroup.Done()
-}
-
-func (s *server) duplicateMap() map[string]*pageInfo {
-	copy := make(map[string]*pageInfo)
-	for key, value := range s.scannedPages {
-		copy[key] = value
-	}
-	return copy
 }
 
 func (s *server) finish() {
@@ -159,6 +211,61 @@ func (s *server) finish() {
 	close(s.requestChannel)
 	s.waitGroup.Wait()
 	close(s.linkChannel)
-	fmt.Println("Shortest path found:")
+	close(s.matchChannel)
+	fmt.Println("Shortest path found: ")
+	fmt.Printf("Depth: %d\n", s.foundPath.depth)
 	fmt.Printf("Path was: %s\n", s.foundPath.path)
+}
+
+func (s *server) sentLinks(query QueryMessage) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.sendWaitGroup.Done()
+		}
+	}()
+	canSend := false
+	for !canSend {
+		temp, ok := s.syncCalls.Load(query.depth)
+		if ok {
+			val := temp.(calls)
+			canSend = val.canSend
+		}
+		time.Sleep(200)
+	}
+
+	if s.foundPath.depth >= query.depth {
+		temp, ok := s.syncCalls.Load(query.depth)
+		if ok {
+			val := temp.(calls)
+			val.sent = val.sent + 1
+			s.syncCalls.Store(query.depth, val)
+		} else {
+			val := calls{
+				canSend: true,
+				sent:    1,
+				recived: 0,
+			}
+			s.syncCalls.Store(query.depth, val)
+		}
+		s.requestChannel <- query
+	}
+	s.sendWaitGroup.Done()
+}
+
+func (s *server) startUp() {
+	var pages []string
+	pages = append(pages, s.startingPage)
+	query := QueryMessage{
+		pages:  pages,
+		origin: s.startingPage,
+		depth:  0,
+	}
+	val := calls{
+		canSend: true,
+		sent:    0,
+		recived: 0,
+	}
+	s.syncCalls.Store(0, val)
+	s.sendWaitGroup.Add(1)
+	go s.sentLinks(query)
 }

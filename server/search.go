@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 
 	"cgt.name/pkg/go-mwclient"
 )
@@ -22,17 +21,12 @@ func newSearch(reqChan chan QueryMessage, linkChan chan LinkMessage) *search {
 	}
 }
 
-func (search *search) run(initalPage string) {
-	var pages []string
-	pages = append(pages, initalPage)
-	//Finding the starting page links
-	search.GetLinks(pages, 0, initalPage)
-	//Then start listening for querychannel
+func (search *search) run() {
 	for query := range search.requestChannel {
 		//Process query and then wait for the next one
 		search.GetLinks(query.pages, query.depth, query.origin)
 	}
-	fmt.Println("Shutting down search tread...")
+	//fmt.Println("Shutting down search tread...")
 }
 
 func (search *search) GetLinks(pages []string, depth int, origin string) {
