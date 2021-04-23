@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	_ "net/http/pprof"
-	"time"
+	"os"
 )
 
 /*
@@ -16,18 +16,18 @@ const (
 */
 
 func main() {
+	args := os.Args[1:]
 	go http.ListenAndServe(":8080", nil)
-	startTime := time.Now()
-	start := "Water"
-	end := "Apple"
+	start := args[0]
+	end := args[1]
 	s := newServer(start, end)
 	go s.run()
 	search := newSearch(s.requestChannel, s.linkChannel)
 	fmt.Printf("Finding path from %s to %s \n", start, end)
 	go search.run()
+	go search.run()
 	go s.match()
 	go s.startUp()
 	s.finish()
-	duration := time.Since(startTime)
-	fmt.Printf("Execution time was: %f seconds\n", duration.Seconds())
+
 }

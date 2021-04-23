@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/gosuri/uilive"
 )
 
 type pageInfo struct {
@@ -20,6 +22,7 @@ type calls struct {
 type server struct {
 	syncScannedPages *sync.Map
 	syncCalls        *sync.Map
+	scannedPages     *int
 	linkChannel      chan LinkMessage
 	requestChannel   chan QueryMessage
 	matchChannel     chan MatchMessage
@@ -45,6 +48,8 @@ func newServer(start string, end string) *server {
 	var swg sync.WaitGroup
 	var sM sync.Map
 	var cM sync.Map
+	sp := 0
+
 	return &server{
 		syncScannedPages: &sM,
 		syncCalls:        &cM,
@@ -57,6 +62,7 @@ func newServer(start string, end string) *server {
 		foundPath:        fP,
 		waitGroup:        &wg,
 		sendWaitGroup:    &swg,
+		scannedPages:     &sp,
 	}
 }
 
@@ -64,7 +70,10 @@ func (s *server) run() {
 	for scan := range s.linkChannel {
 		s.handleScan(scan)
 	}
-	fmt.Println("Shutting down server tread...")
+}
+
+func (s *server) increment() {
+	*s.scannedPages++
 }
 
 func (s *server) handleScan(scan LinkMessage) {
@@ -73,7 +82,6 @@ func (s *server) handleScan(scan LinkMessage) {
 		val := temp.(calls)
 		val.recived = val.recived + 1
 		s.syncCalls.Store(scan.depth, val)
-		fmt.Printf("RECIVED: %d, DEPTH: %d\n", val.recived, scan.depth)
 		if val.sent == val.recived {
 			val := calls{
 				canSend: true,
@@ -82,7 +90,6 @@ func (s *server) handleScan(scan LinkMessage) {
 			}
 			newDepth := scan.depth + 1
 			s.syncCalls.Store(newDepth, val)
-			fmt.Printf("Depth %d allowed\n", newDepth)
 		}
 	} else {
 		val := calls{
@@ -98,12 +105,12 @@ func (s *server) handleScan(scan LinkMessage) {
 		origin: scan.origin,
 	}
 	for key, value := range scan.ret {
-		temp, sok := s.syncScannedPages.Load(key)
-		if !sok {
+		temp, ok := s.syncScannedPages.Load(key)
+		if !ok {
 			s.syncScannedPages.Store(key, pI)
 		} else {
-			sval := temp.(pageInfo)
-			if pageInfo(sval).depth > pI.depth {
+			val := temp.(pageInfo)
+			if pageInfo(val).depth > pI.depth {
 				s.syncScannedPages.Store(key, pI)
 			}
 		}
@@ -116,6 +123,7 @@ func (s *server) handleScan(scan LinkMessage) {
 
 func (s *server) match() {
 	for scan := range s.matchChannel {
+		s.waitGroup.Add(1)
 		previusPage := scan.originPage
 		path := previusPage + " -> " + s.endingPage
 		for previusPage != s.startingPage {
@@ -126,13 +134,12 @@ func (s *server) match() {
 			previusPage = temp.(pageInfo).origin
 			path = previusPage + " -> " + path
 		}
-		fmt.Printf("One path found at depth: %d path: %s\n", scan.depth, path)
 		if scan.depth < s.foundPath.depth {
 			s.foundPath.depth = scan.depth
 			s.foundPath.path = path
 		}
+		s.waitGroup.Done()
 	}
-	fmt.Println("Shutting down server match tread...")
 }
 
 func (s *server) handleLinks(links []string, depth int, origin string) {
@@ -150,15 +157,18 @@ func (s *server) handleLinks(links []string, depth int, origin string) {
 		if s.foundPath.depth < depth {
 			break
 		}
+		s.increment()
 		if links[link] == s.endingPage {
 			//Match found sending message
 			mm := MatchMessage{
 				depth:      depth,
 				originPage: origin,
 			}
+			s.waitGroup.Add(1)
 			s.matchChannel <- mm
+			s.waitGroup.Done()
 			s.found = true
-			break
+
 		}
 	}
 	//Wait for depth
@@ -205,9 +215,13 @@ func (s *server) handleLinks(links []string, depth int, origin string) {
 }
 
 func (s *server) finish() {
+	term := uilive.New()
+	term.Start()
 	for s.foundPath.depth == 9999 {
-		time.Sleep(500)
+		fmt.Fprintf(term, "Searching... %d pages scanned.\n", *s.scannedPages)
+		time.Sleep(time.Millisecond * 100)
 	}
+	term.Stop()
 	close(s.requestChannel)
 	s.waitGroup.Wait()
 	close(s.linkChannel)
@@ -239,17 +253,12 @@ func (s *server) sentLinks(query QueryMessage) {
 			val := temp.(calls)
 			val.sent = val.sent + 1
 			s.syncCalls.Store(query.depth, val)
+			s.requestChannel <- query
+			s.sendWaitGroup.Done()
 		} else {
-			val := calls{
-				canSend: true,
-				sent:    1,
-				recived: 0,
-			}
-			s.syncCalls.Store(query.depth, val)
+			s.sentLinks(query)
 		}
-		s.requestChannel <- query
 	}
-	s.sendWaitGroup.Done()
 }
 
 func (s *server) startUp() {
