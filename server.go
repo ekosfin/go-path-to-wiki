@@ -23,6 +23,7 @@ type server struct {
 	syncScannedPages *sync.Map
 	syncCalls        *sync.Map
 	scannedPages     *int
+	scannedDepth     *int
 	linkChannel      chan LinkMessage
 	requestChannel   chan QueryMessage
 	matchChannel     chan MatchMessage
@@ -49,6 +50,7 @@ func newServer(start string, end string) *server {
 	var sM sync.Map
 	var cM sync.Map
 	sp := 0
+	sD := 0
 
 	return &server{
 		syncScannedPages: &sM,
@@ -63,6 +65,7 @@ func newServer(start string, end string) *server {
 		waitGroup:        &wg,
 		sendWaitGroup:    &swg,
 		scannedPages:     &sp,
+		scannedDepth:     &sD,
 	}
 }
 
@@ -89,6 +92,7 @@ func (s *server) handleScan(scan LinkMessage) {
 				recived: 0,
 			}
 			newDepth := scan.depth + 1
+			*s.scannedDepth = newDepth
 			s.syncCalls.Store(newDepth, val)
 		}
 	} else {
@@ -218,8 +222,8 @@ func (s *server) finish() {
 	term := uilive.New()
 	term.Start()
 	for s.foundPath.depth == 9999 {
-		fmt.Fprintf(term, "Searching... %d pages scanned.\n", *s.scannedPages)
-		time.Sleep(time.Millisecond * 100)
+		fmt.Fprintf(term, "Searching... %d pages scanned, Current depth level is %d\n", *s.scannedPages, *s.scannedDepth)
+		time.Sleep(time.Millisecond * 50)
 	}
 	term.Stop()
 	close(s.requestChannel)
